@@ -1,22 +1,36 @@
 const { ApolloServer, gql, makeExecutableSchema } = require('apollo-server-express');
+const { ApolloError } = require('apollo-server-errors');
 const express = require('express');
+const cors = require('cors');
 const { users } = require('./src/data');
 const jwt = require('jsonwebtoken');
 const expressJwt = require('express-jwt');
 const permissions = require('./src/permissions');
+const db = require('./src/db');
 const { applyMiddleware } = require('graphql-middleware');
 require('dotenv').config();
 
+var id = 1;
 const port = 4000;
 const app = express();
+app.use(cors());
 app.use(
 	expressJwt({ secret: process.env.PRIVATE_KEY, algorithms: ['HS256'], credentialsRequired: false })
 );
 
-const validateLogin = (email, password) => {
-	const result = users.find((user) => user.email === email && user.password === password);
-	if (result) {
-		return result;
+const validateLogin = async (email, password) => {
+	//validate if user is signed up
+	try {
+		const result = await db.query(
+			'SELECT * FROM users WHERE users.email = $1 AND users.password = $2',
+			[email, password]
+		);
+		const user = result.rows[0];
+		if (user) {
+			return user;
+		}
+	} catch (error) {
+		console.log(error);
 	}
 	return false;
 };
@@ -30,8 +44,12 @@ const typeDefs = gql`
 		email: String
 		password: String
 	}
+	type Demo {
+		name: String
+	}
 	type Query {
 		user(id: ID!): User
+		demo: Demo
 	}
 	#here we are creating login mutation for email & password based authentication which returns JWT as string
 	type Mutation {
@@ -41,34 +59,44 @@ const typeDefs = gql`
 `;
 const resolvers = {
 	Query: {
-		user(parent, { id }, { user }) {
+		user: async (parent, { id }, { user }) => {
+			try {
+				const data = await db.query('SELECT * FROM users WHERE id = user.id');
+			} catch (err) {
+				console.log(err);
+			}
 			return user;
+		},
+		demo() {
+			return { name: 'shardul' };
 		},
 	},
 	Mutation: {
-		signUp(parent, { email, password }) {
-			const newId = users[users.length - 1].id + 1;
-			const user = { id: newId, email, password };
-			users.push(user);
-			return user;
+		signUp: async (parent, { email, password }, { db }) => {
+			try {
+				await db.query('INSERT INTO users (id,email,password,name,role) VALUES ($1,$2,$3,$4,$5)', [
+					id,
+					email,
+					password,
+					'shapa',
+					'authe',
+				]);
+				id++;
+				return { email, password };
+			} catch (err) {
+				console.log(err);
+			}
 		},
-		login(parent, { email, password }) {
-			const result = validateLogin(email, password);
+		login: async (parent, { email, password }) => {
+			const result = await validateLogin(email, password);
 			if (result) {
 				//sign jwt token & return
-				const token = jwt.sign(
-					{ id: result.id, email, role: 'authenticated' },
-					process.env.PRIVATE_KEY,
-					{
-						expiresIn: '2h',
-					}
-				);
+				const token = jwt.sign(result, process.env.PRIVATE_KEY, {
+					expiresIn: '2h',
+				});
 				return token;
 			} else {
-				return {
-					status: 401,
-					error: 'Invalid Credentials',
-				};
+				return new ApolloError('Invalid Credentials', '401');
 			}
 		},
 	},
@@ -79,6 +107,7 @@ const server = new ApolloServer({
 		const user = req.user || null;
 		return {
 			user,
+			db: db,
 		};
 	},
 });
